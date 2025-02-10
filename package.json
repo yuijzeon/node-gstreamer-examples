@@ -2,6 +2,10 @@
   "scripts": {
     "lint": "eslint \"src/**/*.ts\" --fix"
   },
+  "dependencies": {
+    "@girs/node-gst-1.0": "^1.23.0-3.3.0",
+    "node-gtk": "^0.14.0"
+  },
   "devDependencies": {
     "@trivago/prettier-plugin-sort-imports": "^5.2.2",
     "@types/jest": "^29.5.14",
