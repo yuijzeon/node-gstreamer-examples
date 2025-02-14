@@ -7,6 +7,7 @@
   "importOrderParserPlugins": [
     "typescript",
     "classProperties",
-    "decorators-legacy"
+    "decorators-legacy",
+    "explicitResourceManagement"
   ]
 }

@@ -8,63 +8,68 @@ import GstWebRTC from '@girs/node-gstwebrtc-1.0';
 it('WebRTC sendrecv', async () => {
   Gst.init(null);
 
-  const pipeline = Gst.parseLaunch(`
-    videotestsrc ! video/x-raw,framerate=1/1 ! queue ! vp8enc ! rtpvp8pay ! queue !
-    application/x-rtp,media=video,payload=96,encoding-name=VP8 !
-    webrtcbin name=send webrtcbin name=recv
-  `) as Gst.Pipeline;
-
-  const bus = pipeline.getBus();
-
-  bus.addWatch(
-    GLib.PRIORITY_DEFAULT,
-    (bus: Gst.Bus, msg: Gst.Message): boolean => {
-      switch (msg.type) {
-        case Gst.MessageType.STATE_CHANGED:
-          if (msg.src === pipeline) {
-            const [oldState, newState] = msg.parseStateChanged();
-            const oldStateName = Gst.Element.stateGetName(oldState);
-            const newStateName = Gst.Element.stateGetName(newState);
-            const dumpName = `state_changed-${oldStateName}_${newStateName}`;
-            Gst.debugBinToDotFileWithTs(
-              pipeline,
-              Gst.DebugGraphDetails.ALL,
-              dumpName,
-            );
-          }
-          break;
-        case Gst.MessageType.ERROR:
-          Gst.debugBinToDotFileWithTs(
-            pipeline,
-            Gst.DebugGraphDetails.ALL,
-            'error',
-          );
-
-          const [err, dbgInfo] = msg.parseError();
-          console.error(
-            `ERROR from element ${msg.src.getName()}: ${err.message}`,
-          );
-          console.error(`Debugging info: ${dbgInfo || 'none'}`);
-          err.free();
-          break;
-        case Gst.MessageType.EOS:
-          Gst.debugBinToDotFileWithTs(
-            pipeline,
-            Gst.DebugGraphDetails.ALL,
-            'eos',
-          );
-          console.log('End-Of-Stream reached.');
-          break;
-        default:
-          break;
-      }
-
-      return true;
-    },
+  using pipeline = Object.assign(
+    Gst.parseLaunch(`
+      videotestsrc ! video/x-raw,framerate=1/1 ! queue ! vp8enc ! rtpvp8pay ! queue !
+      application/x-rtp,media=video,payload=96,encoding-name=VP8 !
+      webrtcbin name=send webrtcbin name=recv
+    `) as Gst.Pipeline,
+    { [Symbol.dispose]: () => pipeline.unref() },
   );
 
-  const webrtc1 = pipeline.getByName('send');
-  const webrtc2 = pipeline.getByName('recv');
+  using bus = Object.assign(pipeline.getBus(), {
+    [Symbol.dispose]: () => {
+      bus.removeWatch();
+      bus.unref();
+    },
+  });
+
+  bus.addWatch(GLib.PRIORITY_DEFAULT, (bus, msg): boolean => {
+    switch (msg.type) {
+      case Gst.MessageType.STATE_CHANGED:
+        if (msg.src === pipeline) {
+          const [oldState, newState] = msg.parseStateChanged();
+          const oldStateName = Gst.Element.stateGetName(oldState);
+          const newStateName = Gst.Element.stateGetName(newState);
+          const dumpName = `state_changed-${oldStateName}_${newStateName}`;
+          Gst.debugBinToDotFileWithTs(
+            pipeline,
+            Gst.DebugGraphDetails.ALL,
+            dumpName,
+          );
+        }
+        break;
+      case Gst.MessageType.ERROR:
+        Gst.debugBinToDotFileWithTs(
+          pipeline,
+          Gst.DebugGraphDetails.ALL,
+          'error',
+        );
+
+        const [err, dbgInfo] = msg.parseError();
+        console.error(
+          `ERROR from element ${msg.src.getName()}: ${err.message}`,
+        );
+        console.error(`Debugging info: ${dbgInfo || 'none'}`);
+        err.free();
+        break;
+      case Gst.MessageType.EOS:
+        Gst.debugBinToDotFileWithTs(pipeline, Gst.DebugGraphDetails.ALL, 'eos');
+        console.log('End-Of-Stream reached.');
+        break;
+      default:
+        break;
+    }
+
+    return true;
+  });
+
+  using webrtc1 = Object.assign(pipeline.getByName('send'), {
+    [Symbol.dispose]: () => webrtc1.unref(),
+  });
+  using webrtc2 = Object.assign(pipeline.getByName('recv'), {
+    [Symbol.dispose]: () => webrtc2.unref(),
+  });
 
   webrtc1.connect('on-negotiation-needed', async () => {
     const offerPromise = await new Promise<Gst.Promise>((resolve) => {
@@ -77,7 +82,10 @@ it('WebRTC sendrecv', async () => {
 
     const offerReply = offerPromise.getReply();
     const offerValue: GObject.Value = offerReply.getValue('offer');
-    const offer1 = offerValue.getBoxed<GstWebRTC.WebRTCSessionDescription>();
+    using offer1 = Object.assign(
+      offerValue.getBoxed<GstWebRTC.WebRTCSessionDescription>(),
+      { [Symbol.dispose]: () => offer1.free() },
+    );
     const offerText = offer1.sdp.asText();
     console.log(`Created offer:\n${offerText}`);
     await new Promise<void>((resolve) => {
@@ -87,12 +95,14 @@ it('WebRTC sendrecv', async () => {
         Gst.Promise.newWithChangeFunc(() => resolve()),
       );
     });
-    offer1.free();
 
     const [, offerSdp] = GstSdp.SDPMessage.newFromText(offerText);
-    const offer2 = GstWebRTC.WebRTCSessionDescription.new(
-      GstWebRTC.WebRTCSDPType.OFFER,
-      offerSdp,
+    using offer2 = Object.assign(
+      GstWebRTC.WebRTCSessionDescription.new(
+        GstWebRTC.WebRTCSDPType.OFFER,
+        offerSdp,
+      ),
+      { [Symbol.dispose]: () => offer2.free() },
     );
     await new Promise<void>((resolve) => {
       webrtc2.emit(
@@ -101,7 +111,6 @@ it('WebRTC sendrecv', async () => {
         Gst.Promise.newWithChangeFunc(() => resolve()),
       );
     });
-    offer2.free();
 
     const answerPromise = await new Promise<Gst.Promise>((resolve) => {
       webrtc2.emit(
@@ -113,7 +122,10 @@ it('WebRTC sendrecv', async () => {
 
     const answerReply = answerPromise.getReply();
     const answerValue: GObject.Value = answerReply.getValue('answer');
-    const answer2 = answerValue.getBoxed<GstWebRTC.WebRTCSessionDescription>();
+    using answer2 = Object.assign(
+      answerValue.getBoxed<GstWebRTC.WebRTCSessionDescription>(),
+      { [Symbol.dispose]: () => answer2.free() },
+    );
     const answer = answer2.sdp.asText();
     console.log(`Created answer:\n${answer}`);
 
@@ -124,12 +136,14 @@ it('WebRTC sendrecv', async () => {
         Gst.Promise.newWithChangeFunc(() => resolve()),
       );
     });
-    answer2.free();
 
     const [, answerSdp] = GstSdp.SDPMessage.newFromText(answer);
-    const answer1 = GstWebRTC.WebRTCSessionDescription.new(
-      GstWebRTC.WebRTCSDPType.ANSWER,
-      answerSdp,
+    using answer1 = Object.assign(
+      GstWebRTC.WebRTCSessionDescription.new(
+        GstWebRTC.WebRTCSDPType.ANSWER,
+        answerSdp,
+      ),
+      { [Symbol.dispose]: () => answer1.free() },
     );
     await new Promise<void>((resolve) => {
       webrtc1.emit(
@@ -138,7 +152,6 @@ it('WebRTC sendrecv', async () => {
         Gst.Promise.newWithChangeFunc(() => resolve()),
       );
     });
-    answer1.free();
   });
 
   webrtc2.connect('pad-added', (newPad: Gst.Pad) => {
@@ -198,10 +211,5 @@ it('WebRTC sendrecv', async () => {
   pipeline.setState(Gst.State.NULL);
   console.log('Pipeline stopped');
 
-  webrtc2.unref();
-  webrtc1.unref();
-  bus.removeWatch();
-  bus.unref();
-  pipeline.unref();
   Gst.deinit();
 });
