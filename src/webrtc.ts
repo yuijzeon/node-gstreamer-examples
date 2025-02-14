@@ -4,8 +4,106 @@ import Gst from '@girs/node-gst-1.0';
 import GstSdp from '@girs/node-gstsdp-1.0';
 import GstWebRTC from '@girs/node-gstwebrtc-1.0';
 
-/** @see {@link https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/blob/discontinued-for-monorepo/tests/examples/webrtc/webrtc.c} */
-it('WebRTC sendrecv', async () => {
+it('WebRTC sendrecv', main);
+
+function gstExecutor(
+  promise: Gst.Promise,
+  resolve: (value: Gst.Structure) => void,
+  reject: (reason: Error) => void,
+) {
+  const reply = promise.getReply();
+  const value: GObject.Value = reply?.getValue('error');
+  if (value) {
+    using error = Object.assign(value.getBoxed<GLib.Error>(), {
+      [Symbol.dispose]: () => error.free(),
+    });
+    reject(new Error(error.message));
+  } else {
+    resolve(reply);
+  }
+}
+
+async function createOffer(webrtc: Gst.Element) {
+  const reply = await new Promise<Gst.Structure>((resolve, reject) => {
+    webrtc.emit(
+      'create-offer',
+      Gst.Structure.newEmpty('NULL'),
+      Gst.Promise.newWithChangeFunc((x) => gstExecutor(x, resolve, reject)),
+    );
+  });
+  const value: GObject.Value = reply.getValue('offer');
+  using description = Object.assign(
+    value.getBoxed<GstWebRTC.WebRTCSessionDescription>(),
+    { [Symbol.dispose]: () => description.free() },
+  );
+  console.log(`Created offer:\n${description.sdp.asText()}`);
+  return description.sdp.asText();
+}
+
+async function createAnswer(webrtc: Gst.Element) {
+  const reply = await new Promise<Gst.Structure>((resolve, reject) => {
+    webrtc.emit(
+      'create-answer',
+      Gst.Structure.newEmpty('NULL'),
+      Gst.Promise.newWithChangeFunc((x) => gstExecutor(x, resolve, reject)),
+    );
+  });
+  const value: GObject.Value = reply.getValue('answer');
+  using description = Object.assign(
+    value.getBoxed<GstWebRTC.WebRTCSessionDescription>(),
+    { [Symbol.dispose]: () => description.free() },
+  );
+  console.log(`Created answer:\n${description.sdp.asText()}`);
+  return description.sdp.asText();
+}
+
+async function setLocalDescription(
+  webrtc: Gst.Element,
+  type: GstWebRTC.WebRTCSDPType,
+  sdpText: string,
+) {
+  const [, sdpMessage] = GstSdp.SDPMessage.newFromText(sdpText);
+  const description = GstWebRTC.WebRTCSessionDescription.new(type, sdpMessage);
+  await new Promise<Gst.Structure>((resolve, reject) => {
+    webrtc.emit(
+      'set-local-description',
+      description,
+      Gst.Promise.newWithChangeFunc((x) => gstExecutor(x, resolve, reject)),
+    );
+  });
+}
+
+async function setRemoteDescription(
+  webrtc: Gst.Element,
+  type: GstWebRTC.WebRTCSDPType,
+  sdpText: string,
+) {
+  const [, sdpMessage] = GstSdp.SDPMessage.newFromText(sdpText);
+  const description = GstWebRTC.WebRTCSessionDescription.new(type, sdpMessage);
+  await new Promise<Gst.Structure>((resolve, reject) => {
+    webrtc.emit(
+      'set-remote-description',
+      description,
+      Gst.Promise.newWithChangeFunc((x) => gstExecutor(x, resolve, reject)),
+    );
+  });
+}
+
+async function addIceCandidate(
+  webrtc: Gst.Element,
+  candidateInit: RTCIceCandidateInit,
+) {
+  await new Promise<Gst.Structure>((resolve, reject) => {
+    webrtc.emit(
+      'add-ice-candidate',
+      candidateInit.sdpMLineIndex,
+      candidateInit.candidate,
+      Gst.Promise.newWithChangeFunc((x) => gstExecutor(x, resolve, reject)),
+    );
+  });
+}
+
+async function main() {
   Gst.init(null);
 
   using pipeline = Object.assign(
@@ -72,134 +170,79 @@ it('WebRTC sendrecv', async () => {
   });
 
   webrtc1.connect('on-negotiation-needed', async () => {
-    const offerPromise = await new Promise<Gst.Promise>((resolve) => {
-      webrtc1.emit(
-        'create-offer',
-        Gst.Structure.newEmpty('NULL'),
-        Gst.Promise.newWithChangeFunc((x) => resolve(x)),
-      );
-    });
-
-    const offerReply = offerPromise.getReply();
-    const offerValue: GObject.Value = offerReply.getValue('offer');
-    using offer1 = Object.assign(
-      offerValue.getBoxed<GstWebRTC.WebRTCSessionDescription>(),
-      { [Symbol.dispose]: () => offer1.free() },
-    );
-    const offerText = offer1.sdp.asText();
-    console.log(`Created offer:\n${offerText}`);
-    await new Promise<void>((resolve) => {
-      webrtc1.emit(
-        'set-local-description',
-        offer1,
-        Gst.Promise.newWithChangeFunc(() => resolve()),
-      );
-    });
-
-    const [, offerSdp] = GstSdp.SDPMessage.newFromText(offerText);
-    using offer2 = Object.assign(
-      GstWebRTC.WebRTCSessionDescription.new(
+    try {
+      const offerText = await createOffer(webrtc1);
+      await setLocalDescription(
+        webrtc1,
         GstWebRTC.WebRTCSDPType.OFFER,
-        offerSdp,
-      ),
-      { [Symbol.dispose]: () => offer2.free() },
-    );
-    await new Promise<void>((resolve) => {
-      webrtc2.emit(
-        'set-remote-description',
-        offer2,
-        Gst.Promise.newWithChangeFunc(() => resolve()),
+        offerText,
       );
-    });
-
-    const answerPromise = await new Promise<Gst.Promise>((resolve) => {
-      webrtc2.emit(
-        'create-answer',
-        Gst.Structure.newEmpty('NULL'),
-        Gst.Promise.newWithChangeFunc((x) => resolve(x)),
+      await setRemoteDescription(
+        webrtc2,
+        GstWebRTC.WebRTCSDPType.OFFER,
+        offerText,
       );
-    });
-
-    const answerReply = answerPromise.getReply();
-    const answerValue: GObject.Value = answerReply.getValue('answer');
-    using answer2 = Object.assign(
-      answerValue.getBoxed<GstWebRTC.WebRTCSessionDescription>(),
-      { [Symbol.dispose]: () => answer2.free() },
-    );
-    const answer = answer2.sdp.asText();
-    console.log(`Created answer:\n${answer}`);
-
-    await new Promise<void>((resolve) => {
-      webrtc2.emit(
-        'set-local-description',
-        answer2,
-        Gst.Promise.newWithChangeFunc(() => resolve()),
-      );
-    });
-
-    const [, answerSdp] = GstSdp.SDPMessage.newFromText(answer);
-    using answer1 = Object.assign(
-      GstWebRTC.WebRTCSessionDescription.new(
+      const answerText = await createAnswer(webrtc2);
+      await setLocalDescription(
+        webrtc2,
         GstWebRTC.WebRTCSDPType.ANSWER,
-        answerSdp,
-      ),
-      { [Symbol.dispose]: () => answer1.free() },
-    );
-    await new Promise<void>((resolve) => {
-      webrtc1.emit(
-        'set-remote-description',
-        answer1,
-        Gst.Promise.newWithChangeFunc(() => resolve()),
+        answerText,
       );
-    });
+      await setRemoteDescription(
+        webrtc1,
+        GstWebRTC.WebRTCSDPType.ANSWER,
+        answerText,
+      );
+    } catch (error) {
+      console.error(error);
+    }
   });
 
-  webrtc2.connect('pad-added', (newPad: Gst.Pad) => {
+  webrtc2.connect('pad-added', (pad: Gst.Pad) => {
+    using newPad = Object.assign(pad, {
+      [Symbol.dispose]: () => newPad.unref(),
+    });
+
     if (newPad.getDirection() != Gst.PadDirection.SRC) {
       return;
     }
 
-    const outBin = Gst.parseBinFromDescription(
-      'rtpvp8depay ! vp8dec ! videoconvert ! queue ! xvimagesink sync=false',
-      true,
+    using outBin = Object.assign(
+      Gst.parseBinFromDescription(
+        'rtpvp8depay ! vp8dec ! videoconvert ! queue ! xvimagesink sync=false',
+        true,
+      ),
+      { [Symbol.dispose]: () => outBin.unref() },
     );
 
     pipeline.add(outBin);
     outBin.syncStateWithParent();
 
-    const staticPad = outBin.getStaticPad('sink');
+    using staticPad = Object.assign(outBin.getStaticPad('sink'), {
+      [Symbol.dispose]: () => staticPad.unref(),
+    });
     newPad.link(staticPad);
-
-    staticPad.unref();
-    outBin.unref();
-    newPad.unref();
   });
 
   webrtc1.connect(
     'on-ice-candidate',
     async (sdpMLineIndex: number, candidate: string) => {
-      await new Promise<void>((resolve) => {
-        webrtc2.emit(
-          'add-ice-candidate',
-          sdpMLineIndex,
-          candidate,
-          Gst.Promise.newWithChangeFunc(() => resolve()),
-        );
-      });
+      try {
+        await addIceCandidate(webrtc2, { sdpMLineIndex, candidate });
+      } catch (error) {
+        console.error(error);
+      }
     },
   );
 
   webrtc2.connect(
     'on-ice-candidate',
     async (sdpMLineIndex: number, candidate: string) => {
-      await new Promise<void>((resolve) => {
-        webrtc1.emit(
-          'add-ice-candidate',
-          sdpMLineIndex,
-          candidate,
-          Gst.Promise.newWithChangeFunc(() => resolve()),
-        );
-      });
+      try {
+        await addIceCandidate(webrtc1, { sdpMLineIndex, candidate });
+      } catch (error) {
+        console.error(error);
+      }
     },
   );
 
@@ -212,4 +255,4 @@ it('WebRTC sendrecv', async () => {
   console.log('Pipeline stopped');
 
   Gst.deinit();
-});
+}
